@@ -27,8 +27,12 @@ def ingest() -> pd.DataFrame:
     print(f"[01_ingest] Reading: {RAW_CSV}")
 
     # ── Read ──────────────────────────────────────────────────────────────────
-    # UCI dataset uses semicolon delimiter
-    df = pd.read_csv(RAW_CSV, sep=";")
+    # Auto-detect delimiter (UCI original uses ";", clean export uses ",")
+    import csv as _csv
+    with open(RAW_CSV, newline="", encoding="utf-8") as _f:
+        _sample = _f.read(2048)
+    _sep = ";" if _sample.count(";") > _sample.count(",") else ","
+    df = pd.read_csv(RAW_CSV, sep=_sep)
 
     print(f"  Raw rows    : {len(df)}")
     print(f"  Raw columns : {len(df.columns)}")

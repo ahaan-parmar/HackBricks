@@ -28,7 +28,7 @@ GOLD_PRED_FILE  = GOLD_DIR / "student_dropout_predictions.parquet"
 GOLD_SHAP_FILE  = GOLD_DIR / "shap_feature_importance.parquet"
 
 # ── MLflow ────────────────────────────────────────────────────────────────────
-MLFLOW_TRACKING_URI = str(ROOT / "mlruns")
+MLFLOW_TRACKING_URI = (ROOT / "mlruns").as_uri()   # file:///C:/... safe on Windows
 EXPERIMENT_NAME     = "student_dropout_experiment"
 MODEL_NAME          = "student_dropout_classifier"
 
