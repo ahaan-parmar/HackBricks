@@ -1,0 +1,14 @@
+
+.databricks
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+mlruns/
+data/bronze/
+data/silver/
+data/gold/
+data/raw/
+data/plots/
+*.token

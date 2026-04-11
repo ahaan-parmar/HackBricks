@@ -1,0 +1,23 @@
+# HackBricks — Student Dropout ML Pipeline
+# Install on Databricks cluster via: %pip install -r requirements.txt
+# or set in cluster Libraries tab
+
+# ML
+scikit-learn>=1.3.0
+xgboost>=2.0.0
+
+# Explainability
+shap>=0.44.0
+
+# Fairness
+fairlearn>=0.10.0
+
+# MLflow (pre-installed on Databricks, listed for local dev)
+mlflow>=2.10.0
+
+# Data
+pandas>=2.0.0
+numpy>=1.26.0
+
+# Testing (local only)
+pytest>=7.4.0

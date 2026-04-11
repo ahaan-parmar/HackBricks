@@ -1,0 +1,34 @@
+# Databricks Asset Bundle — HackBricks
+# Student Dropout Prediction ML Pipeline
+
+bundle:
+  name: HackBricks
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    default: main
+  schema_bronze:
+    default: bronze
+  schema_silver:
+    default: silver
+  schema_gold:
+    default: gold
+  model_name:
+    default: student_dropout_classifier
+  experiment_name:
+    default: /Shared/student_dropout_experiment
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://dbc-8dbfaaf3-7252.cloud.databricks.com
+
+  prod:
+    mode: production
+    workspace:
+      host: https://dbc-8dbfaaf3-7252.cloud.databricks.com
