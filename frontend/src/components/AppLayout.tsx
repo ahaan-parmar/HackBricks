@@ -15,7 +15,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-background">
       <header className="bg-nav text-nav-foreground h-12 flex items-center px-6">
         <Link to="/" className="font-bold text-heading4 mr-12 tracking-tight">
-          Don't Drop
+          Drop(In)
         </Link>
         <nav className="flex gap-1">
           {navLinks.map((link) => (

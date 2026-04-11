@@ -1,51 +1,62 @@
 """
-03_train_models.py - MODEL TRAINING (local)
-Two models compete:
-  1. Logistic Regression — features pre-selected by Random Forest importance
-  2. XGBoost             — all features
-
-Best by ROC-AUC is saved to disk and used by the backend.
+03_train_models.py - XGBoost vs Logistic Regression
+80/20 stratified split, full evaluation matrix, save best model.
 
 Run: python local/03_train_models.py
 """
-
 import sys, json
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import seaborn as sns
 import mlflow, mlflow.sklearn, mlflow.xgboost
 import joblib
 
-from sklearn.linear_model   import LogisticRegression
-from sklearn.ensemble        import RandomForestClassifier
+from sklearn.linear_model    import LogisticRegression
 from sklearn.pipeline        import Pipeline
 from sklearn.preprocessing   import StandardScaler
 from sklearn.model_selection import train_test_split
-from sklearn.metrics         import accuracy_score, f1_score, roc_auc_score, classification_report
-from xgboost                 import XGBClassifier
-
-from config import (
-    SILVER_FILE, MLFLOW_TRACKING_URI,
-    EXPERIMENT_NAME, FEATURE_COLS, LABEL_COL,
+from sklearn.metrics import (
+    accuracy_score, f1_score, roc_auc_score, precision_score,
+    recall_score, confusion_matrix, classification_report, roc_curve
 )
+from xgboost import XGBClassifier
 
-MODEL_DIR = Path(__file__).resolve().parent.parent / "data" / "models"
-TOP_N_FEATURES = 15   # how many RF-selected features LR gets
+ROOT      = Path(__file__).resolve().parent.parent
+MODEL_DIR = ROOT / "data" / "models"
+PLOTS_DIR = ROOT / "data" / "plots"
+PROC_DIR  = ROOT / "data" / "processed"
+
+FEATURE_COLS = [
+    "application_mode", "application_order", "course",
+    "daytime_evening_attendance", "previous_qualification_grade",
+    "admission_grade", "displaced", "educational_special_needs",
+    "debtor", "tuition_fees_up_to_date", "gender",
+    "scholarship_holder", "age_at_enrollment", "international",
+    "curricular_units_1st_sem_enrolled", "curricular_units_1st_sem_approved",
+    "curricular_units_1st_sem_grade", "curricular_units_1st_sem_evaluations",
+    "curricular_units_1st_sem_without_evaluations",
+    "curricular_units_2nd_sem_enrolled", "curricular_units_2nd_sem_approved",
+    "curricular_units_2nd_sem_grade", "curricular_units_2nd_sem_evaluations",
+    "unemployment_rate", "inflation_rate", "gdp",
+    "financial_stress_index", "enrollment_efficiency",
+    "avg_grade", "total_approved_units",
+]
+LABEL_COL = "target_binary"
 
 
-def load_silver() -> tuple[pd.DataFrame, list[str]]:
-    ROOT = Path(__file__).resolve().parent.parent
-    csv_path = ROOT / "dataset" / "students_dropout_academic_success_clean.csv"
-
-    if SILVER_FILE.exists():
-        print(f"  Source: silver parquet")
-        df = pd.read_parquet(SILVER_FILE)
-    elif csv_path.exists():
-        print(f"  Silver parquet not found — falling back to clean CSV")
-        df = pd.read_csv(csv_path)
-        # Apply silver transforms inline
+def load_data():
+    clean = PROC_DIR / "students_clean.parquet"
+    csv   = ROOT / "dataset" / "students_dropout_academic_success_clean.csv"
+    if clean.exists():
+        df = pd.read_parquet(clean)
+    else:
+        df = pd.read_csv(csv)
         df["target_binary"] = (df["target"] == "Dropout").astype(int)
         df["enrollment_efficiency"] = df.apply(
             lambda r: 0.0 if r["curricular_units_1st_sem_enrolled"] == 0
@@ -60,160 +71,159 @@ def load_silver() -> tuple[pd.DataFrame, list[str]]:
             + (1 - df["tuition_fees_up_to_date"]).astype(float) * 0.25
             + (1 - df["scholarship_holder"]).astype(float) * 0.15
             + df["displaced"].astype(float) * 0.10
-            + unemp_norm * 0.10 + diseng * 0.10
-        )
-    else:
-        print("[ERROR] No data source found.")
-        sys.exit(1)
+            + unemp_norm * 0.10 + diseng * 0.10)
 
-    available = [c for c in FEATURE_COLS if c in df.columns]
-    missing   = [c for c in FEATURE_COLS if c not in df.columns]
-    if missing:
-        print(f"  [WARN] Missing features (will skip): {missing}")
-    return df[available + [LABEL_COL]].dropna(), available
+    cols = [c for c in FEATURE_COLS if c in df.columns]
+    return df[cols + [LABEL_COL]].dropna(), cols
 
 
-def metrics_for(model, X_test, y_test) -> dict:
-    y_pred = model.predict(X_test)
-    y_prob = model.predict_proba(X_test)[:, 1]
+def eval_metrics(model, X, y, name):
+    y_pred = model.predict(X)
+    y_prob = model.predict_proba(X)[:, 1]
+    cm = confusion_matrix(y, y_pred)
+    tn, fp, fn, tp = cm.ravel()
     return {
-        "accuracy":    round(float(accuracy_score(y_test, y_pred)),  4),
-        "f1_weighted": round(float(f1_score(y_test, y_pred, average="weighted")), 4),
-        "roc_auc":     round(float(roc_auc_score(y_test, y_prob)),   4),
+        "model":     name,
+        "accuracy":  round(accuracy_score(y, y_pred), 4),
+        "precision": round(precision_score(y, y_pred, zero_division=0), 4),
+        "recall":    round(recall_score(y, y_pred, zero_division=0), 4),
+        "f1":        round(f1_score(y, y_pred, average="weighted"), 4),
+        "roc_auc":   round(roc_auc_score(y, y_prob), 4),
+        "tp": int(tp), "fp": int(fp), "tn": int(tn), "fn": int(fn),
+        "y_prob":    y_prob,
+        "y_pred":    y_pred,
+        "cm":        cm,
     }
+
+
+def plot_confusion_matrix(cm, name, path):
+    fig, ax = plt.subplots(figsize=(4, 3))
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax,
+                xticklabels=["Not Dropout","Dropout"],
+                yticklabels=["Not Dropout","Dropout"])
+    ax.set_title(f"Confusion Matrix — {name}", fontsize=10)
+    ax.set_ylabel("Actual"); ax.set_xlabel("Predicted")
+    plt.tight_layout()
+    fig.savefig(path, dpi=120, bbox_inches="tight")
+    plt.close()
+
+
+def plot_roc(results, path):
+    fig, ax = plt.subplots(figsize=(5, 4))
+    for r in results:
+        fpr, tpr, _ = roc_curve(r["y_test"], r["y_prob"])
+        ax.plot(fpr, tpr, label=f"{r['model']} (AUC={r['roc_auc']:.3f})", lw=2)
+    ax.plot([0,1],[0,1],"k--", lw=1)
+    ax.set_xlabel("False Positive Rate"); ax.set_ylabel("True Positive Rate")
+    ax.set_title("ROC Curve Comparison"); ax.legend(); ax.grid(alpha=0.3)
+    plt.tight_layout()
+    fig.savefig(path, dpi=120, bbox_inches="tight")
+    plt.close()
 
 
 def main():
-    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-    mlflow.set_experiment(EXPERIMENT_NAME)
+    PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
-    print(f"[03_train] Loading silver: {SILVER_FILE}")
-    df, feature_cols = load_silver()
+    mlflow.set_tracking_uri((ROOT / "mlruns").as_uri())
+    mlflow.set_experiment("student_dropout_experiment")
 
+    print("[03_train] Loading data...")
+    df, feature_cols = load_data()
     X = df[feature_cols]
     y = df[LABEL_COL]
 
+    # 80/20 stratified split
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
-    print(f"  Train: {len(X_train)}  Test: {len(X_test)}  Dropout rate: {y.mean():.2%}")
+        X, y, test_size=0.20, random_state=42, stratify=y)
+
+    print(f"  Train: {len(X_train)} ({y_train.mean():.1%} dropout)")
+    print(f"  Test : {len(X_test)}  ({y_test.mean():.1%} dropout)")
 
     dropout_ratio = float((y_train == 0).sum() / max((y_train == 1).sum(), 1))
+    results = []
 
-    # ── Step 1: Random Forest feature selection ───────────────────────────────
-    print(f"\n[03_train] Step 1 — Random Forest feature selection (top {TOP_N_FEATURES})")
-    rf_selector = RandomForestClassifier(
-        n_estimators=300, max_depth=10,
-        class_weight="balanced", random_state=42, n_jobs=-1
-    )
-    rf_selector.fit(X_train, y_train)
-
-    importances = pd.Series(rf_selector.feature_importances_, index=feature_cols)
-    top_features = importances.nlargest(TOP_N_FEATURES).index.tolist()
-
-    print(f"  Top {TOP_N_FEATURES} features by RF importance:")
-    for feat in top_features:
-        print(f"    {feat:45s} {importances[feat]:.4f}")
-
-    # ── Step 2: Logistic Regression on RF-selected features ───────────────────
-    print(f"\n[03_train] Step 2 — Logistic Regression on RF-selected features")
-    lr_model = Pipeline([
+    # ── Logistic Regression ───────────────────────────────────────────────────
+    print("\n[03_train] Training Logistic Regression...")
+    lr = Pipeline([
         ("scaler", StandardScaler()),
-        ("clf", LogisticRegression(
-            C=1.0, max_iter=1000, solver="lbfgs",
-            class_weight="balanced", random_state=42
-        )),
+        ("clf", LogisticRegression(C=1.0, max_iter=1000, class_weight="balanced",
+                                   solver="lbfgs", random_state=42)),
     ])
-    lr_model.fit(X_train[top_features], y_train)
-    lr_metrics = metrics_for(lr_model, X_test[top_features], y_test)
+    lr.fit(X_train, y_train)
+    lr_m = eval_metrics(lr, X_test, y_test, "Logistic Regression")
+    lr_m["y_test"] = y_test.values
+    results.append(lr_m)
 
-    print(f"  Accuracy : {lr_metrics['accuracy']}")
-    print(f"  F1       : {lr_metrics['f1_weighted']}")
-    print(f"  ROC-AUC  : {lr_metrics['roc_auc']}")
+    with mlflow.start_run(run_name="logistic_regression"):
+        mlflow.log_metrics({k: v for k, v in lr_m.items() if k in ["accuracy","precision","recall","f1","roc_auc"]})
+        mlflow.sklearn.log_model(lr, "model")
 
-    with mlflow.start_run(run_name="logistic_regression_rf_selected"):
-        mlflow.log_metrics(lr_metrics)
-        mlflow.log_param("feature_selection", "random_forest")
-        mlflow.log_param("n_features", TOP_N_FEATURES)
-        mlflow.log_param("top_features", str(top_features))
-        mlflow.set_tag("model_type", "logistic_regression")
-        mlflow.log_text(
-            classification_report(y_test, lr_model.predict(X_test[top_features]),
-                                  target_names=["Not Dropout", "Dropout"]),
-            "classification_report.txt"
-        )
-        mlflow.sklearn.log_model(lr_model, "model")
+    print(f"  AUC={lr_m['roc_auc']}  F1={lr_m['f1']}  Acc={lr_m['accuracy']}")
 
-    # ── Step 3: XGBoost on all features ──────────────────────────────────────
-    print(f"\n[03_train] Step 3 — XGBoost (all {len(feature_cols)} features)")
-    xgb_model = XGBClassifier(
+    # ── XGBoost ───────────────────────────────────────────────────────────────
+    print("\n[03_train] Training XGBoost...")
+    xgb = XGBClassifier(
         n_estimators=200, max_depth=4, learning_rate=0.05,
         subsample=0.8, colsample_bytree=0.8,
         scale_pos_weight=dropout_ratio,
-        eval_metric="logloss", random_state=42,
-        verbosity=0,
-    )
-    xgb_model.fit(X_train, y_train)
-    xgb_metrics = metrics_for(xgb_model, X_test, y_test)
-
-    print(f"  Accuracy : {xgb_metrics['accuracy']}")
-    print(f"  F1       : {xgb_metrics['f1_weighted']}")
-    print(f"  ROC-AUC  : {xgb_metrics['roc_auc']}")
+        eval_metric="logloss", random_state=42, verbosity=0)
+    xgb.fit(X_train, y_train)
+    xgb_m = eval_metrics(xgb, X_test, y_test, "XGBoost")
+    xgb_m["y_test"] = y_test.values
+    results.append(xgb_m)
 
     with mlflow.start_run(run_name="xgboost"):
-        mlflow.log_metrics(xgb_metrics)
-        mlflow.log_param("n_estimators", 200)
-        mlflow.log_param("max_depth", 4)
-        mlflow.set_tag("model_type", "xgboost")
-        mlflow.log_text(
-            classification_report(y_test, xgb_model.predict(X_test),
-                                  target_names=["Not Dropout", "Dropout"]),
-            "classification_report.txt"
-        )
-        mlflow.xgboost.log_model(xgb_model, "model")
+        mlflow.log_metrics({k: v for k, v in xgb_m.items() if k in ["accuracy","precision","recall","f1","roc_auc"]})
+        mlflow.xgboost.log_model(xgb, "model")
 
-    # ── Step 4: Compare and pick best ────────────────────────────────────────
-    print(f"\n[03_train] === Model Comparison ===")
-    print(f"  {'Model':40s}  ROC-AUC   F1")
-    print(f"  {'LR (RF-selected features)':40s}  {lr_metrics['roc_auc']:.4f}    {lr_metrics['f1_weighted']:.4f}")
-    print(f"  {'XGBoost (all features)':40s}  {xgb_metrics['roc_auc']:.4f}    {xgb_metrics['f1_weighted']:.4f}")
+    print(f"  AUC={xgb_m['roc_auc']}  F1={xgb_m['f1']}  Acc={xgb_m['accuracy']}")
 
-    if xgb_metrics["roc_auc"] >= lr_metrics["roc_auc"]:
-        best_name     = "xgboost"
-        best_model    = xgb_model
-        best_metrics  = xgb_metrics
-        best_features = feature_cols
-    else:
-        best_name     = "logistic_regression_rf_selected"
-        best_model    = lr_model
-        best_metrics  = lr_metrics
-        best_features = top_features
+    # ── Comparison ────────────────────────────────────────────────────────────
+    print("\n[03_train] ===== Evaluation Matrix =====")
+    print(f"  {'Metric':12s}  {'Log Reg':>10s}  {'XGBoost':>10s}")
+    for metric in ["accuracy","precision","recall","f1","roc_auc"]:
+        print(f"  {metric:12s}  {lr_m[metric]:>10.4f}  {xgb_m[metric]:>10.4f}")
 
-    print(f"\n  Winner: {best_name} (ROC-AUC={best_metrics['roc_auc']})")
+    # ── Plots ─────────────────────────────────────────────────────────────────
+    plot_confusion_matrix(lr_m["cm"],  "Logistic Regression", PLOTS_DIR / "cm_lr.png")
+    plot_confusion_matrix(xgb_m["cm"], "XGBoost",             PLOTS_DIR / "cm_xgb.png")
+    plot_roc(results, PLOTS_DIR / "roc_comparison.png")
+    print(f"  Saved plots to {PLOTS_DIR}")
 
-    # ── Step 5: Save best model + metadata ───────────────────────────────────
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    # ── Save best model ───────────────────────────────────────────────────────
+    best = max(results, key=lambda r: r["roc_auc"])
+    best_model = xgb if best["model"] == "XGBoost" else lr
+    best_name  = best["model"].lower().replace(" ", "_")
+
     joblib.dump(best_model, MODEL_DIR / "best_model.pkl")
+    joblib.dump(xgb,        MODEL_DIR / "xgb_model.pkl")
+    joblib.dump(lr,         MODEL_DIR / "lr_model.pkl")
 
-    # Always save RF selector for SHAP / feature importance reference
-    joblib.dump(rf_selector, MODEL_DIR / "rf_selector.pkl")
-
-    meta = {
-        "model_name":    best_name,
-        "feature_cols":  best_features,
-        "all_features":  feature_cols,
-        "top_rf_features": top_features,
-        "metrics":       best_metrics,
+    eval_out = {
+        "winner":        best["model"],
+        "feature_cols":  feature_cols,
+        "train_size":    len(X_train),
+        "test_size":     len(X_test),
+        "logistic_regression": {k: v for k, v in lr_m.items()
+                                 if k in ["accuracy","precision","recall","f1","roc_auc","tp","fp","tn","fn"]},
+        "xgboost":             {k: v for k, v in xgb_m.items()
+                                 if k in ["accuracy","precision","recall","f1","roc_auc","tp","fp","tn","fn"]},
     }
-    with open(MODEL_DIR / "best_model_meta.json", "w") as f:
-        json.dump(meta, f, indent=2)
+    with open(MODEL_DIR / "eval_matrix.json", "w") as f:
+        json.dump(eval_out, f, indent=2)
 
-    print(f"  Saved model : data/models/best_model.pkl")
-    print(f"  Saved RF    : data/models/rf_selector.pkl")
-    print(f"  Saved meta  : data/models/best_model_meta.json")
-    print(f"\n[03_train] DONE")
+    # Save XGBoost feature importance
+    imp = pd.Series(xgb.feature_importances_, index=feature_cols).sort_values(ascending=False)
+    imp.reset_index().rename(columns={"index":"feature",0:"importance"}).to_parquet(
+        ROOT / "data" / "gold" / "feature_importance.parquet" if (ROOT/"data"/"gold").exists()
+        else MODEL_DIR / "feature_importance.parquet", index=False)
 
-    return best_model, best_name, best_features
+    print(f"\n  Winner: {best['model']}  (AUC={best['roc_auc']})")
+    print(f"  Saved:  data/models/best_model.pkl + eval_matrix.json")
+    print("[03_train] DONE")
+
+    return xgb, lr, feature_cols, X_train, X_test, y_train, y_test
 
 
 if __name__ == "__main__":
