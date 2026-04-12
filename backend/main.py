@@ -203,7 +203,13 @@ def dashboard():
             eo  = float(len(pos[pos["risk_tier"].isin(["MEDIUM","HIGH"])]) / max(len(pos),1)) if "risk_tier" in df.columns else dp
             fairness[label] = {"dropout_rate": round(dp,4), "count": len(grp), "equal_opportunity": round(eo,4)}
 
-    gender_gap = abs(fairness.get("male",{}).get("dropout_rate",0) - fairness.get("female",{}).get("dropout_rate",0))
+    # Gender gap based on MODEL PREDICTIONS (risk_score), not actual outcomes
+    if "risk_score" in df.columns and "gender" in df.columns:
+        male_pred  = float(df[df["gender"]==1]["risk_score"].mean()) / 100.0
+        female_pred = float(df[df["gender"]==0]["risk_score"].mean()) / 100.0
+        gender_gap = abs(male_pred - female_pred)
+    else:
+        gender_gap = abs(fairness.get("male",{}).get("dropout_rate",0) - fairness.get("female",{}).get("dropout_rate",0))
 
     # Top 3 SHAP features with descriptions
     top_features = []
@@ -231,6 +237,16 @@ def dashboard():
                 "description":   FEATURE_DESCRIPTIONS.get(feat, f"{readable} is a significant predictor of student dropout."),
             })
 
+    # Compare model gap to actual gap.  Model is biased only if it AMPLIFIES the real gap.
+    actual_gap = abs(fairness.get("male",{}).get("dropout_rate",0) - fairness.get("female",{}).get("dropout_rate",0))
+    amplification = gender_gap - actual_gap   # positive = model makes it worse
+    if amplification > 0.03:
+        fairness_status = "BIASED"
+    elif gender_gap > 0.05:
+        fairness_status = "REVIEW"
+    else:
+        fairness_status = "FAIR"
+
     return {
         "totalStudents":    total,
         "actualDropouts":   dropouts,
@@ -240,7 +256,7 @@ def dashboard():
         "riskDistribution": [{"segment": k, "count": v} for k, v in seg_counts.items()],
         "fairness":         fairness,
         "genderGap":        round(gender_gap, 4),
-        "fairnessStatus":   flag(gender_gap),
+        "fairnessStatus":   fairness_status,
         "topFeatures":      top_features,
     }
 
@@ -254,17 +270,15 @@ def students(
 ):
     df = load_df()
 
-    # Compute per-student fairness flag
-    if "gender" in df.columns and "target_binary" in df.columns:
-        male_rate   = float(df[df["gender"]==1]["target_binary"].mean()) if (df["gender"]==1).any() else 0
-        female_rate = float(df[df["gender"]==0]["target_binary"].mean()) if (df["gender"]==0).any() else 0
-        gender_gap  = abs(male_rate - female_rate)
-        gender_flag = flag(gender_gap)
-        df = df.copy()
-        # Same model-level flag for all — but mark which group has higher risk
-        df["_fairness_flag"] = gender_flag
+    # Compute per-student fairness flag using individual SHAP gender value
+    df = df.copy()
+    if "shap_gender" in df.columns:
+        # If |shap_gender| is large, the model is using gender heavily for THIS student
+        abs_shap = df["shap_gender"].abs()
+        df["_fairness_flag"] = "FAIR"
+        df.loc[abs_shap > 0.03, "_fairness_flag"] = "REVIEW"
+        df.loc[abs_shap > 0.10, "_fairness_flag"] = "BIASED"
     else:
-        df = df.copy()
         df["_fairness_flag"] = "FAIR"
 
     # Server-side filters
@@ -477,7 +491,7 @@ def fairness():
     # SHAP-based bias: which features drive the gender gap
     shap_gender_bias = []
     shap_income_bias = []
-    shap_cols = [c for c in df.columns if c.startswith("shap_")]
+    shap_cols = [c for c in df.columns if c.startswith("shap_") and df[c].dtype in ['float64','float32','int64','int32']]
     if shap_cols:
         if "gender" in df.columns:
             m_shap = df[df["gender"]==1][shap_cols].mean()
@@ -633,6 +647,121 @@ def financial_calculator(college: str = Query("Default")):
         "roi":                  round(((high + medium) * annual_fee * 0.40) / max((high + medium) * 12000, 1), 1),
         "availableColleges":    list(COLLEGE_FEES.keys()),
     }
+
+
+# ── Enrichment endpoints ───────────────────────────────────────────────────────
+
+@app.get("/api/enrichment")
+def enrichment():
+    """OULAD VLE + World Bank + AISHE enrichment summary for judges."""
+    import json as _json
+    summary_path = GOLD_DIR / "enrichment_summary.json"
+    if not summary_path.exists():
+        return JSONResponse(
+            {"error": "Enrichment data not generated. Run: python local/run_enrichment.py"},
+            status_code=404,
+        )
+    with open(summary_path) as f:
+        summary = _json.load(f)
+
+    # Load VLE feature importance if available
+    vle_fi_path = GOLD_DIR / "oulad_vle_feature_importance.parquet"
+    vle_top_features = []
+    if vle_fi_path.exists():
+        vle_fi = pd.read_parquet(vle_fi_path)
+        for _, row in vle_fi.iterrows():
+            vle_top_features.append({
+                "feature":    str(row["feature"]) if "feature" in row.index else "",
+                "label":      str(row["feature_label"]) if "feature_label" in row.index else str(row["feature"]),
+                "importance": round(float(row["importance"]), 4),
+            })
+
+    # Load model comparison
+    mc_path = GOLD_DIR / "oulad_model_comparison.parquet"
+    model_comparison = []
+    if mc_path.exists():
+        mc = pd.read_parquet(mc_path)
+        for _, row in mc.iterrows():
+            model_comparison.append({
+                "model":        str(row["model"]),
+                "dataset":      str(row["dataset"]),
+                "n_features":   int(row["n_features"]),
+                "vle_enriched": bool(row["vle_enriched"]),
+                "auc_roc":      round(float(row["auc_roc"]), 4),
+                "f1_score":     round(float(row["f1_score"]), 4),
+                "mlflow_run":   str(row["mlflow_run"]),
+            })
+
+    # Load AISHE state data for map/table
+    aishe_path = GOLD_DIR / "aishe_state_dropout.parquet"
+    aishe_states = []
+    if aishe_path.exists():
+        aishe_df = pd.read_parquet(aishe_path)
+        for _, row in aishe_df.head(30).iterrows():
+            aishe_states.append({
+                "state":          str(row["state"]),
+                "male_dropout":   round(float(row["dropout_rate_male_higher_secondary"]), 1),
+                "female_dropout": round(float(row["dropout_rate_female_higher_secondary"]), 1),
+                "avg_dropout":    round(float(row["state_avg_dropout_rate"]), 1),
+                "gender_gap":     round(float(row["gender_dropout_gap"]), 1),
+                "risk_tier":      str(row["state_risk_tier"]),
+            })
+
+    # Load World Bank Portugal time series
+    wb_path = GOLD_DIR / "worldbank_macro.parquet"
+    wb_series = []
+    if wb_path.exists():
+        wb_df = pd.read_parquet(wb_path)
+        prt = wb_df[wb_df["country_code"] == "PRT"].sort_values("year")
+        for _, row in prt.iterrows():
+            entry: dict = {"year": int(row["year"])}
+            for col in ["gdp_per_capita", "unemployment_rate",
+                        "tertiary_enrolment_rate", "inflation_rate",
+                        "unemployment_rising", "gdp_contracting"]:
+                if col in row.index:
+                    try:
+                        val = row[col]
+                        if val is not None and not pd.isna(val):
+                            entry[col] = round(float(val), 2)
+                    except Exception:
+                        pass
+            wb_series.append(entry)
+
+    return {
+        "oulad":           summary.get("oulad", {}),
+        "aishe":           summary.get("aishe", {}),
+        "worldbank":       summary.get("worldbank", {}),
+        "modelComparison": model_comparison,
+        "vleTopFeatures":  vle_top_features,
+        "aisheStates":     aishe_states,
+        "wbSeries":        wb_series,
+    }
+
+
+@app.get("/api/aishe")
+def aishe_data():
+    """AISHE state-level dropout rates for fairness benchmarking."""
+    path = GOLD_DIR / "aishe_state_dropout.parquet"
+    if not path.exists():
+        return JSONResponse({"error": "Run python local/run_enrichment.py first"}, status_code=404)
+    df = pd.read_parquet(path)
+    national = {
+        "male_dropout":    round(float(df["dropout_rate_male_higher_secondary"].mean()), 2),
+        "female_dropout":  round(float(df["dropout_rate_female_higher_secondary"].mean()), 2),
+        "gender_gap":      round(float(df["gender_dropout_gap"].mean()), 2),
+        "avg_dropout":     round(float(df["state_avg_dropout_rate"].mean()), 2),
+    }
+    states = []
+    for _, r in df.iterrows():
+        states.append({
+            "state":          r["state"],
+            "male_dropout":   round(float(r["dropout_rate_male_higher_secondary"]), 1),
+            "female_dropout": round(float(r["dropout_rate_female_higher_secondary"]), 1),
+            "avg_dropout":    round(float(r["state_avg_dropout_rate"]), 1),
+            "gender_gap":     round(float(r["gender_dropout_gap"]), 1),
+            "risk_tier":      str(r["state_risk_tier"]),
+        })
+    return {"national": national, "states": states}
 
 
 # ── Plot endpoints ─────────────────────────────────────────────────────────────
