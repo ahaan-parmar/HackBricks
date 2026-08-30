@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, FairnessData } from "@/api/client";
-import { AlertTriangle, Shield, TrendingDown, Lightbulb, BarChart3, Users, Globe, Database } from "lucide-react";
+import { AlertTriangle, Shield, TrendingDown, Lightbulb, BarChart3, Users, Globe, Database, TrendingUp } from "lucide-react";
 
 /* ── Helpers ──────────────────────────────────────────────────────────────── */
 
@@ -183,7 +183,7 @@ export default function Fairness() {
       <div className="bg-card border border-card-border shadow-card rounded-lg p-5">
         <SectionHeader
           icon={<BarChart3 size={18} className="text-foreground/70" />}
-          title="A. Metrics Summary"
+          title="Metrics Summary"
           subtitle="Demographic parity and equal opportunity differences"
         />
 
@@ -250,7 +250,7 @@ export default function Fairness() {
         <div className="bg-card border border-card-border shadow-card rounded-lg p-5">
           <SectionHeader
             icon={<Users size={18} className="text-foreground/70" />}
-            title="B. Demographic Parity"
+            title="Demographic Parity"
             subtitle="Actual dropout rate by group"
           />
           {allDPRows.map(r => (
@@ -265,7 +265,7 @@ export default function Fairness() {
         <div className="bg-card border border-card-border shadow-card rounded-lg p-5">
           <SectionHeader
             icon={<Shield size={18} className="text-foreground/70" />}
-            title="C. Equal Opportunity"
+            title="Equal Opportunity"
             subtitle="Among actual dropouts, fraction flagged at-risk"
           />
           {allEORows.map(r => (
@@ -283,7 +283,7 @@ export default function Fairness() {
       <div className="bg-card border border-card-border shadow-card rounded-lg p-5">
         <SectionHeader
           icon={<AlertTriangle size={18} className="text-red-600" />}
-          title="C. Bias Detection"
+          title="Bias Detection"
           subtitle="Clearly highlighting identified disparities"
         />
         <div className="bg-red-50 border border-red-200 rounded-lg p-4">
@@ -330,7 +330,7 @@ export default function Fairness() {
           <div className="bg-card border border-card-border shadow-card rounded-lg p-5">
             <SectionHeader
               icon={<TrendingDown size={18} className="text-foreground/70" />}
-              title="D. Gender Bias — Root Cause"
+              title="Gender Bias — Root Cause"
               subtitle="SHAP features driving gender prediction disparity"
             />
             <div className="space-y-3">
@@ -368,7 +368,7 @@ export default function Fairness() {
           <div className="bg-card border border-card-border shadow-card rounded-lg p-5">
             <SectionHeader
               icon={<TrendingDown size={18} className="text-foreground/70" />}
-              title="D. Income Bias — Root Cause"
+              title="Income Bias — Root Cause"
               subtitle="SHAP features driving socioeconomic prediction disparity"
             />
             <div className="space-y-3">
@@ -409,7 +409,7 @@ export default function Fairness() {
         <div className="bg-card border border-card-border shadow-card rounded-lg p-5">
           <SectionHeader
             icon={<Lightbulb size={18} className="text-yellow-600" />}
-            title="E. Mitigation Suggestions"
+            title="Mitigation Suggestions"
             subtitle="Actionable recommendations to reduce model bias"
           />
           <div className="space-y-3">
@@ -435,7 +435,7 @@ export default function Fairness() {
         <div className="bg-card border border-card-border shadow-card rounded-lg p-5">
           <SectionHeader
             icon={<Globe size={18} className="text-blue-600" />}
-            title="F. AISHE Benchmark — Model vs India's Documented Gender Gap"
+            title="AISHE Benchmark — Model vs India's Documented Gender Gap"
             subtitle="Validating our model's disparity against AISHE 2021-22 national reference data"
           />
 
@@ -528,7 +528,7 @@ export default function Fairness() {
         <div className="bg-card border border-card-border shadow-card rounded-lg p-5">
           <SectionHeader
             icon={<Database size={18} className="text-purple-600" />}
-            title="G. OULAD + VLE Enrichment — Model AUC Uplift"
+            title="OULAD + VLE Enrichment — Model AUC Uplift"
             subtitle="Adding VLE clickstream engagement features improves both accuracy and fairness"
           />
 
@@ -561,6 +561,40 @@ export default function Fairness() {
             ))}
           </div>
 
+          {/* VLE Feature Importance */}
+          {enrichment.vleTopFeatures && enrichment.vleTopFeatures.length > 0 && (
+            <div className="mb-5">
+              <p className="text-[12px] font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+                VLE Feature Importance — what the enriched model learned
+              </p>
+              <div className="space-y-2">
+                {enrichment.vleTopFeatures.map((f, i) => {
+                  const max = enrichment.vleTopFeatures[0].importance;
+                  const pct = (f.importance / max) * 100;
+                  return (
+                    <div key={f.feature}>
+                      <div className="flex items-center justify-between text-[12px] mb-1">
+                        <span className={`font-medium ${i === 0 ? "text-purple-700" : "text-foreground"}`}>
+                          {i === 0 && <span className="mr-1">★</span>}{f.label}
+                        </span>
+                        <span className="font-mono text-muted-foreground">{(f.importance * 100).toFixed(2)}%</span>
+                      </div>
+                      <div className="h-2 bg-muted rounded overflow-hidden">
+                        <div
+                          className={`h-full rounded ${i === 0 ? "bg-purple-500" : "bg-purple-300"}`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-2 italic">
+                ★ Engagement Drop (clicks week 1-4 vs week 5-12) is the single strongest VLE signal — students who disengage mid-term are most at risk.
+              </p>
+            </div>
+          )}
+
           {enrichment.oulad?.key_insight && (
             <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
               <p className="text-[13px] text-purple-800 leading-relaxed">
@@ -568,6 +602,62 @@ export default function Fairness() {
               </p>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════════════════════
+          H. WORLD BANK MACRO ENRICHMENT
+         ═══════════════════════════════════════════════════════════════════════ */}
+      {enrichment?.worldbank && (
+        <div className="bg-card border border-card-border shadow-card rounded-lg p-5">
+          <SectionHeader
+            icon={<TrendingUp size={18} className="text-green-600" />}
+            title={`World Bank Macro Enrichment — Portugal (latest: ${enrichment.worldbank.snapshot_year})`}
+            subtitle="Real economic context features via World Bank Open API — matches UCI dataset origin"
+          />
+
+          {/* 4 stat tiles */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+            {[
+              { label: `GDP per Capita (${enrichment.worldbank.snapshot_year})`, value: `$${Number(enrichment.worldbank.gdp_per_capita).toLocaleString()}`, sub: "Portugal — World Bank" },
+              { label: "Unemployment Rate", value: `${enrichment.worldbank.unemployment_rate}%`, sub: `Portugal ${enrichment.worldbank.snapshot_year}` },
+              { label: "Tertiary Enrolment", value: `${enrichment.worldbank.tertiary_enrolment_rate}%`, sub: `Gross enrolment ratio, Portugal ${enrichment.worldbank.snapshot_year}` },
+              { label: "Inflation Rate", value: `${enrichment.worldbank.inflation_rate}%`, sub: `Consumer prices, Portugal ${enrichment.worldbank.snapshot_year}` },
+            ].map(t => (
+              <div key={t.label} className="bg-muted/30 rounded-lg p-3">
+                <p className="text-[11px] text-muted-foreground mb-1">{t.label}</p>
+                <p className="text-[22px] font-bold">{t.value}</p>
+                <p className="text-[11px] text-muted-foreground">{t.sub}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* New features added */}
+          <div className="mb-4">
+            <p className="text-[12px] font-semibold text-muted-foreground uppercase tracking-wide mb-2">New features added to UCI dataset</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {[
+                { name: "gdp_yoy_delta", desc: "Was GDP growing or shrinking when student enrolled?" },
+                { name: "unemployment_yoy_delta", desc: "Was unemployment rising or falling that year?" },
+                { name: "unemployment_rising", desc: "Binary flag — job market worsening? Stronger predictor than raw rate." },
+                { name: "gdp_contracting", desc: "Binary flag — economy shrinking? Captures anxiety, not just poverty." },
+                { name: "tertiary_enrolment_rate", desc: "Macro demand for higher education in enrollment year." },
+                { name: "gdp_growth_pct", desc: "Year-over-year GDP growth % — normalised economic signal." },
+              ].map(f => (
+                <div key={f.name} className="flex gap-2 text-[12px] p-2 bg-muted/20 rounded">
+                  <code className="font-mono text-green-700 shrink-0">{f.name}</code>
+                  <span className="text-muted-foreground">{f.desc}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Key insight */}
+          <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+            <p className="text-[13px] text-green-800 leading-relaxed">
+              <strong className="font-semibold">Key insight:</strong> {enrichment.worldbank.key_insight}
+            </p>
+          </div>
         </div>
       )}
 

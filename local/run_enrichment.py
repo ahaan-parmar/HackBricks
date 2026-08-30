@@ -368,13 +368,11 @@ if "unemployment_rate_yoy_delta" in wb_pivot.columns:
 wb_pivot.to_parquet(GOLD_DIR / "worldbank_macro.parquet", index=False)
 ok(f"Saved worldbank_macro.parquet — {len(wb_pivot)} rows")
 
-# Snapshot for 2015 (UCI cohort midpoint)
-wb_prt_2015 = wb_pivot[(wb_pivot["country_code"] == "PRT") & (wb_pivot["year"] == 2015)]
-if wb_prt_2015.empty:
-    wb_prt_2015 = wb_pivot[wb_pivot["country_code"] == "PRT"].iloc[-1:]
-
-wb_row = wb_prt_2015.iloc[0]
-step("Portugal macro snapshot (2015):")
+# Snapshot — latest available year for Portugal
+wb_prt = wb_pivot[wb_pivot["country_code"] == "PRT"].sort_values("year")
+wb_row = wb_prt.iloc[-1]  # most recent year
+snapshot_year = int(wb_row["year"])
+step(f"Portugal macro snapshot ({snapshot_year}):")
 for k in ["gdp_per_capita", "unemployment_rate", "tertiary_enrolment_rate", "inflation_rate"]:
     if k in wb_row:
         print(f"       {k}: {wb_row[k]:.2f}")
@@ -581,7 +579,7 @@ enrichment_summary = {
 
     # World Bank
     "worldbank": {
-        "snapshot_year":            2015,
+        "snapshot_year":            snapshot_year,
         "country":                  "Portugal",
         "gdp_per_capita":           round(wb_gdp_2015, 0),
         "unemployment_rate":        round(float(wb_row.get("unemployment_rate", 12.4)), 1),
